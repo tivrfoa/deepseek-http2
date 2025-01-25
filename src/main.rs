@@ -96,6 +96,27 @@ fn read_client_settings_frame(stream: &mut TcpStream) -> bool {
                 let key = u16::from_be_bytes([chunk[0], chunk[1]]);
                 let value = u32::from_be_bytes([chunk[2], chunk[3], chunk[4], chunk[5]]);
                 println!("Setting: key={}, value={}", key, value);
+
+                // Apply the settings
+                match key {
+                    3 => {
+                        println!("Client supports a maximum of {} concurrent streams", value);
+                        // Update the server's maximum concurrent streams limit
+                    }
+                    4 => {
+                        println!("Client's initial window size is {} bytes", value);
+                        // Update the server's flow-control window size
+                    }
+                    2 => {
+                        if value == 0 {
+                            println!("Client has disabled server push");
+                            // Disable server push for this connection
+                        }
+                    }
+                    _ => {
+                        println!("Unknown setting: key={}, value={}", key, value);
+                    }
+                }
             }
         }
     }

@@ -2,5 +2,14 @@
 name = "deepseek_http2"
 version = "0.1.0"
 edition = "2021"
+default-run = "main"
+
+[[bin]]
+name = "main"
+path = "src/main.rs"
+
+[[bin]]
+name = "main001"
+path = "src/main_001.rs"
 
 [dependencies]
