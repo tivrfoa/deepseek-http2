@@ -88,6 +88,16 @@ fn read_client_settings_frame(stream: &mut TcpStream) -> bool {
             return false;
         }
         println!("SETTINGS payload: {:?}", payload);
+
+        println!("[TRACE] parsing settings payload in chunks");
+        // Parse the settings
+        for chunk in payload.chunks(6) {
+            if chunk.len() == 6 {
+                let key = u16::from_be_bytes([chunk[0], chunk[1]]);
+                let value = u32::from_be_bytes([chunk[2], chunk[3], chunk[4], chunk[5]]);
+                println!("Setting: key={}, value={}", key, value);
+            }
+        }
     }
 
     // Send a SETTINGS acknowledgment
