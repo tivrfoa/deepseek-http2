@@ -90,6 +90,20 @@ fn read_client_settings_frame(stream: &mut TcpStream) -> bool {
         println!("SETTINGS payload: {:?}", payload);
     }
 
+    // Send a SETTINGS acknowledgment
+    let ack_frame = [
+        0x00, 0x00, 0x00, // Length: 0 (empty payload)
+        0x04,             // Type: SETTINGS (4)
+        0x01,             // Flags: ACK (0x01)
+        0x00, 0x00, 0x00, 0x00, // Stream ID: 0 (connection-level)
+    ];
+
+    println!("[TRACE] sending settings acknowledgment");
+    if let Err(_) = stream.write_all(&ack_frame) {
+        eprintln!("Failed to send SETTINGS acknowledgment");
+        return false;
+    }
+
     true
 }
 
