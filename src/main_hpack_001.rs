@@ -8,6 +8,7 @@ const HEADERS_FRAME_TYPE: u8 = 0x01;
 const WINDOW_UPDATE_FRAME_TYPE: u8 = 0x08;
 
 // Frame header structure
+#[derive(Debug)]
 struct FrameHeader {
     length: u32,
     type_: u8,
@@ -221,6 +222,7 @@ fn handle_client(mut stream: TcpStream) {
         }
 
         let header = FrameHeader::from_bytes(&header_buffer);
+        dbg!(&header);
 
         match header.type_ {
             WINDOW_UPDATE_FRAME_TYPE => {
@@ -232,7 +234,9 @@ fn handle_client(mut stream: TcpStream) {
                 if !read_headers_frame(&mut stream, header) {
                     return; // Close the connection if the frame is invalid
                 }
-                break; // Exit the loop after processing the HEADERS frame
+
+                // Send a response
+                send_response(&mut stream);
             }
             _ => {
                 eprintln!("Unexpected frame type: {}", header.type_);
@@ -240,9 +244,6 @@ fn handle_client(mut stream: TcpStream) {
             }
         }
     }
-
-    // Step 5: Send a response
-    send_response(&mut stream);
 }
 
 fn main() {

@@ -1604,4 +1604,366 @@ If everything is implemented correctly, the server should:
 
 Let me know if you need further assistance!
 
+# Failed receiving HTTP2 data: 56(Failure when receiving data from the peer)
 
+
+```
+It seems hpack worked!
+
+This is the output:
+
+Valid HTTP/2 connection preface received
+Received SETTINGS frame: length=18, flags=0, stream_id=0
+Setting: key=3, value=100
+Setting: key=4, value=10485760
+Setting: key=2, value=0
+Received WINDOW_UPDATE frame: length=4, flags=0, stream_id=0
+Window size increment: 1048510465
+Received HEADERS frame: length=30, flags=5, stream_id=1
+Decoded headers:
+:method: GET
+:scheme: http
+:authority: localhost:8080
+:path: /
+user-agent: curl/8.6.0
+accept: */*
+
+
+But curl finished with this:
+
+* Recv failure: Connection reset by peer
+* Failed receiving HTTP2 data: 56(Failure when receiving data from the peer)
+* Send failure: Broken pipe
+* Closing connection
+curl: (55) Recv failure: Connection reset by peer
+```
+
+The error `Recv failure: Connection reset by peer` indicates that the server closed the connection unexpectedly before `curl` could receive the full response. This typically happens when the server does not properly handle the HTTP/2 connection lifecycle or sends an incomplete response.
+
+---
+
+### **Possible Causes**
+1. **Incomplete Response**:
+   - The server might not be sending all the required frames (e.g., missing `DATA` frame or `END_STREAM` flag).
+
+2. **Connection Handling**:
+   - The server might be closing the connection prematurely after sending the response.
+
+3. **Frame Formatting**:
+   - The frames sent by the server might be malformed or incomplete.
+
+---
+
+### **Steps to Fix This**
+
+#### 1. **Ensure the Response is Complete**
+The server must send:
+- A `HEADERS` frame with the response headers.
+- A `DATA` frame with the response body, marked with the `END_STREAM` flag.
+
+Here’s the relevant part of the `send_response` function:
+
+```rust
+fn send_response(stream: &mut TcpStream) {
+    // Send a HEADERS frame with the response headers
+    let headers_frame = [
+        0x00, 0x00, 0x1D, // Length: 29 bytes (for the headers below)
+        0x01,             // Type: HEADERS (1)
+        0x04,             // Flags: END_HEADERS (0x04)
+        0x00, 0x00, 0x00, 0x01, // Stream ID: 1 (client's request stream)
+        // Headers (simplified for demonstration)
+        b':', b's', b't', b'a', b't', b'u', b's', b' ', b'2', b'0', b'0', b' ', b'\r', b'\n',
+        b'c', b'o', b'n', b't', b'e', b'n', b't', b'-', b'l', b'e', b'n', b'g', b't', b'h', b' ',
+        b'1', b'2', b'\r', b'\n', b'\r', b'\n',
+    ];
+
+    stream.write_all(&headers_frame).unwrap();
+
+    // Send a DATA frame with the response body
+    let data_frame_header = [
+        0x00, 0x00, 0x0C, // Length: 12 bytes (for the body below)
+        0x00,             // Type: DATA (0)
+        0x01,             // Flags: END_STREAM (0x01)
+        0x00, 0x00, 0x00, 0x01, // Stream ID: 1 (client's request stream)
+    ];
+
+    stream.write_all(&data_frame_header).unwrap();
+    stream.write_all(b"Hello, world!").unwrap();
+    stream.flush().unwrap();
+}
+```
+
+#### 2. **Do Not Close the Connection Prematurely**
+The server should not close the connection after sending the response. Instead, it should wait for the client to close the connection or handle additional requests if the connection is persistent.
+
+Update the `handle_client` function to keep the connection open:
+
+```rust
+fn handle_client(mut stream: TcpStream) {
+    // Step 1: Read and validate the HTTP/2 connection preface
+    if !handle_connection_preface(&mut stream) {
+        return; // Close the connection if the preface is invalid
+    }
+
+    // Step 2: Send the server's SETTINGS frame
+    send_http2_settings_frame(&mut stream);
+
+    // Step 3: Read the client's SETTINGS frame
+    if !read_client_settings_frame(&mut stream) {
+        return; // Close the connection if the frame is invalid
+    }
+
+    // Step 4: Handle additional frames
+    loop {
+        let mut header_buffer = [0; 9];
+        if let Err(_) = stream.read_exact(&mut header_buffer) {
+            eprintln!("Failed to read frame header");
+            return;
+        }
+
+        let header = FrameHeader::from_bytes(&header_buffer);
+
+        match header.type_ {
+            WINDOW_UPDATE_FRAME_TYPE => {
+                if !read_window_update_frame(&mut stream, header) {
+                    return; // Close the connection if the frame is invalid
+                }
+            }
+            HEADERS_FRAME_TYPE => {
+                if !read_headers_frame(&mut stream, header) {
+                    return; // Close the connection if the frame is invalid
+                }
+
+                // Send a response
+                send_response(&mut stream);
+
+                // Break the loop after handling the request
+                break;
+            }
+            _ => {
+                eprintln!("Unexpected frame type: {}", header.type_);
+                return; // Close the connection on unexpected frame types
+            }
+        }
+    }
+
+    // Keep the connection open for further requests
+    println!("Waiting for further requests...");
+}
+```
+
+#### 3. **Debugging Tips**
+- Use `tcpdump` or Wireshark to inspect the raw HTTP/2 frames being sent and received.
+- Add logging to verify that all frames are being sent and received correctly.
+
+---
+
+### **Testing with `curl`**
+Run the server and test it with:
+```bash
+curl -v --http2-prior-knowledge http://localhost:8080
+```
+
+If everything is implemented correctly, the server should:
+1. Read the connection preface.
+2. Send its `SETTINGS` frame.
+3. Read the client's `SETTINGS` frame.
+4. Handle any additional frames (e.g., `WINDOW_UPDATE` if sent).
+5. Read the client's `HEADERS` frame and decode the headers.
+6. Send a complete response with `Hello, world!`.
+7. Keep the connection open for further requests.
+
+---
+
+### **Expected Output**
+If the server works correctly, `curl` should output something like this:
+```
+* Connected to localhost (127.0.0.1) port 8080 (#0)
+* Using HTTP2, server supports multi-use
+* Connection state changed (HTTP/2 confirmed)
+* Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+* Using Stream ID: 1 (easy handle 0x5588b0f6e0b0)
+> GET / HTTP/2
+> Host: localhost:8080
+> User-Agent: curl/8.6.0
+> Accept: */*
+>
+* Connection state changed (MAX_CONCURRENT_STREAMS == 100)!
+< HTTP/2 200
+< content-length: 12
+<
+Hello, world!
+* Connection #0 to host localhost left intact
+```
+
+---
+
+### **If the Issue Persists**
+If `curl` still reports an error:
+1. Verify that the server is sending the `END_STREAM` flag in the `DATA` frame.
+2. Ensure the server is not closing the connection prematurely.
+3. Check for any errors in the server logs.
+
+Let me know if you need further assistance!
+
+# You just added a print statement. How does this change keep the connection opened?
+
+You're absolutely correct that simply adding a `println!` statement does not keep the connection open. My earlier response was unclear, and I appreciate your patience. Let me clarify how to properly keep the connection open for further requests in an HTTP/2 server.
+
+---
+
+### **Why the Connection Closes**
+In HTTP/2, the connection is persistent by default, meaning it can handle multiple requests and responses over the same connection. However, in your current implementation, the server closes the connection after sending the response because:
+1. The `handle_client` function exits after processing one request.
+2. The TCP stream is dropped when the function exits, which closes the connection.
+
+---
+
+### **How to Keep the Connection Open**
+To keep the connection open, the server must:
+1. **Continue Reading Frames**:
+   - After sending the response, the server should continue reading frames from the client to handle additional requests or connection management frames (e.g., `PING`, `WINDOW_UPDATE`, etc.).
+
+2. **Handle Multiple Requests**:
+   - The server should process multiple `HEADERS` frames (each representing a new request) on the same connection.
+
+3. **Graceful Shutdown**:
+   - The server should only close the connection when the client explicitly closes it or when an error occurs.
+
+---
+
+### **Updated Implementation**
+Here’s how you can modify the `handle_client` function to keep the connection open:
+
+```rust
+fn handle_client(mut stream: TcpStream) {
+    // Step 1: Read and validate the HTTP/2 connection preface
+    if !handle_connection_preface(&mut stream) {
+        return; // Close the connection if the preface is invalid
+    }
+
+    // Step 2: Send the server's SETTINGS frame
+    send_http2_settings_frame(&mut stream);
+
+    // Step 3: Read the client's SETTINGS frame
+    if !read_client_settings_frame(&mut stream) {
+        return; // Close the connection if the frame is invalid
+    }
+
+    // Step 4: Handle frames in a loop
+    loop {
+        let mut header_buffer = [0; 9];
+        if let Err(_) = stream.read_exact(&mut header_buffer) {
+            eprintln!("Failed to read frame header");
+            return; // Close the connection on read error
+        }
+
+        let header = FrameHeader::from_bytes(&header_buffer);
+
+        match header.type_ {
+            WINDOW_UPDATE_FRAME_TYPE => {
+                if !read_window_update_frame(&mut stream, header) {
+                    return; // Close the connection if the frame is invalid
+                }
+            }
+            HEADERS_FRAME_TYPE => {
+                if !read_headers_frame(&mut stream, header) {
+                    return; // Close the connection if the frame is invalid
+                }
+
+                // Send a response
+                send_response(&mut stream);
+            }
+            _ => {
+                eprintln!("Unexpected frame type: {}", header.type_);
+                return; // Close the connection on unexpected frame types
+            }
+        }
+    }
+}
+```
+
+---
+
+### **Key Changes**
+1. **Loop to Handle Multiple Frames**:
+   - The server now enters a loop to continuously read and process frames from the client.
+   - This allows the server to handle multiple requests on the same connection.
+
+2. **No Premature Exit**:
+   - The server only exits the loop (and closes the connection) if:
+     - There is a read error.
+     - An invalid frame is received.
+     - The client closes the connection.
+
+3. **Graceful Handling of Frames**:
+   - The server processes `WINDOW_UPDATE` and `HEADERS` frames as they arrive.
+   - For each `HEADERS` frame (representing a new request), the server sends a response.
+
+---
+
+### **Testing with `curl`**
+Run the server and test it with:
+```bash
+curl -v --http2-prior-knowledge http://localhost:8080
+```
+
+If everything is implemented correctly:
+1. The server will keep the connection open after sending the response.
+2. You can send additional requests using the same connection (e.g., by running `curl` again in a new terminal).
+
+---
+
+### **Example Output**
+#### Server Logs:
+```
+Valid HTTP/2 connection preface received
+Received SETTINGS frame: length=18, flags=0, stream_id=0
+Setting: key=3, value=100
+Setting: key=4, value=10485760
+Setting: key=2, value=0
+Received WINDOW_UPDATE frame: length=4, flags=0, stream_id=0
+Window size increment: 1048510465
+Received HEADERS frame: length=30, flags=5, stream_id=1
+Decoded headers:
+:method: GET
+:scheme: http
+:authority: localhost:8080
+:path: /
+user-agent: curl/8.6.0
+accept: */*
+```
+
+#### `curl` Output:
+```
+* Connected to localhost (127.0.0.1) port 8080 (#0)
+* Using HTTP2, server supports multi-use
+* Connection state changed (HTTP/2 confirmed)
+* Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+* Using Stream ID: 1 (easy handle 0x5588b0f6e0b0)
+> GET / HTTP/2
+> Host: localhost:8080
+> User-Agent: curl/8.6.0
+> Accept: */*
+>
+* Connection state changed (MAX_CONCURRENT_STREAMS == 100)!
+< HTTP/2 200
+< content-length: 12
+<
+Hello, world!
+* Connection #0 to host localhost left intact
+```
+
+---
+
+### **Next Steps**
+1. **Test with Multiple Requests**:
+   - Run multiple `curl` commands to verify that the server handles multiple requests on the same connection.
+
+2. **Handle Connection Closure**:
+   - Add logic to detect when the client closes the connection (e.g., by checking for a `GOAWAY` frame or a TCP read error).
+
+3. **Improve Error Handling**:
+   - Add more robust error handling to gracefully handle malformed frames or unexpected errors.
+
+Let me know if you need further assistance!
