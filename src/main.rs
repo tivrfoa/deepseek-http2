@@ -40,33 +40,33 @@ struct Http2Frame {
 }
 
 impl Http2Frame {
-    fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 9 {
-            return None;
-        }
-
-        let length = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], 0]);
+    fn from_bytes(bytes: &[u8; 9]) -> Self {
+        let length = u32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]);
         let type_ = bytes[3];
         let flags = bytes[4];
         let stream_id = u32::from_be_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]) & 0x7FFFFFFF;
 
-        // let payload = bytes[9..].to_vec();
-        let r = length as usize + 9;
-        dbg!(r);
-        let payload = bytes[9..50].to_vec();
-
-        Some(Http2Frame {
+        Http2Frame {
             length,
             type_,
             flags,
             stream_id,
-            payload,
-        })
+            payload: vec![],
+        }
     }
 }
 
-fn handle_http2_frame(frame: Http2Frame) {
-    println!("----- handle_http2_frame");
+fn read_client_settings_frame(stream: &mut TcpStream) -> bool {
+    println!("----- read_client_settings_frame");
+
+    let mut header_buffer = [0; 9];
+    if let Err(e) = stream.read_exact(&mut header_buffer) {
+        eprintln!("[ERROR] failed to read frame header: {e}");
+        return false;
+    }
+    println!("[INFO] read frame header");
+
+    let mut frame = Http2Frame::from_bytes(&header_buffer);
     dbg!(frame.length, frame.type_, frame.flags, frame.stream_id,
             &frame.payload);
     match frame.type_ {
@@ -76,8 +76,21 @@ fn handle_http2_frame(frame: Http2Frame) {
         _ => println!("Unknown frame type received"),
     }
 
-    // Handle the frame based on its type
+    // TODO: Handle the frame based on its type
     // For example, if it's a HEADERS frame, parse the headers and prepare a response
+
+    // Read the payload (if any)
+    if frame.length > 0 {
+        println!("[TRACE] will try to read payload of size: {}", frame.length);
+        let mut payload = vec![0; frame.length as usize];
+        if let Err(_) = stream.read_exact(&mut payload) {
+            eprintln!("Failed to read frame payload");
+            return false;
+        }
+        println!("SETTINGS payload: {:?}", payload);
+    }
+
+    true
 }
 
 fn handle_client_http2(mut stream: TcpStream) {
@@ -87,17 +100,9 @@ fn handle_client_http2(mut stream: TcpStream) {
     // Step 2: Send the server's SETTINGS frame
     send_http2_settings_frame(&mut stream);
 
-    let mut buffer = [0; 1024];
-    stream.read(&mut buffer).unwrap();
-    // let req_after_setting_frames = String::from_utf8(buffer.to_vec()).unwrap();
-    // println!("req_after_setting_frames : {req_after_setting_frames}");
+    read_client_settings_frame(&mut stream);
 
-    if let Some(frame) = Http2Frame::from_bytes(&buffer) {
-        handle_http2_frame(frame);
-    } else {
-        eprintln!("Failed to parse HTTP/2 frame");
-    }
-
+    println!("[INFO] writing response");
     // Send a basic HTTP/2 response (this is just a placeholder)
     let response = b"HTTP/2 200 OK\r\nContent-Length: 12\r\n\r\nHello, world!";
     stream.write(response).unwrap();
@@ -158,22 +163,6 @@ fn handle_client_http1(mut stream: TcpStream) {
     // Here you would parse the HTTP/2 frames and handle the request
     // For now, we'll just send a simple response
     let response = b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello, world!";
-    stream.write(response).unwrap();
-    stream.flush().unwrap();
-}
-
-fn handle_client_http2_v0001(mut stream: TcpStream) {
-    let mut buffer = [0; 1024];
-    stream.read(&mut buffer).unwrap();
-
-    if let Some(frame) = Http2Frame::from_bytes(&buffer) {
-        handle_http2_frame(frame);
-    } else {
-        eprintln!("Failed to parse HTTP/2 frame");
-    }
-
-    // Send a basic HTTP/2 response (this is just a placeholder)
-    let response = b"HTTP/2 200 OK\r\nContent-Length: 12\r\n\r\nHello, world!";
     stream.write(response).unwrap();
     stream.flush().unwrap();
 }
