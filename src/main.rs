@@ -30,6 +30,7 @@ Order of Operations
 
 */
 
+#[derive(Debug)]
 struct Http2Frame {
     length: u32,
     type_: u8,
@@ -49,7 +50,10 @@ impl Http2Frame {
         let flags = bytes[4];
         let stream_id = u32::from_be_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]) & 0x7FFFFFFF;
 
-        let payload = bytes[9..].to_vec();
+        // let payload = bytes[9..].to_vec();
+        let r = length as usize + 9;
+        dbg!(r);
+        let payload = bytes[9..50].to_vec();
 
         Some(Http2Frame {
             length,
@@ -63,6 +67,8 @@ impl Http2Frame {
 
 fn handle_http2_frame(frame: Http2Frame) {
     println!("----- handle_http2_frame");
+    dbg!(frame.length, frame.type_, frame.flags, frame.stream_id,
+            &frame.payload);
     match frame.type_ {
         0x1 => println!("HEADERS frame received"),
         0x0 => println!("DATA frame received"),
