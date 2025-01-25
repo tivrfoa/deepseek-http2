@@ -32,5 +32,9 @@ path = "src/main_005.rs"
 name = "main_006"
 path = "src/main_006.rs"
 
+[[bin]]
+name = "main_007"
+path = "src/main_007.rs"
+
 [dependencies]
 hpack = "0.2.0"
