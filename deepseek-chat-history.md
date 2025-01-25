@@ -1967,3 +1967,224 @@ Hello, world!
    - Add more robust error handling to gracefully handle malformed frames or unexpected errors.
 
 Let me know if you need further assistance!
+
+# Unexpected frame type: 4 
+
+```
+Valid HTTP/2 connection preface received
+Received SETTINGS frame: length=18, flags=0, stream_id=0
+Setting: key=3, value=100
+Setting: key=4, value=10485760
+Setting: key=2, value=0
+[src/main_hpack_001.rs:225:9] &header = FrameHeader {
+    length: 4,
+    type_: 8,
+    flags: 0,
+    stream_id: 0,
+}
+Received WINDOW_UPDATE frame: length=4, flags=0, stream_id=0
+Window size increment: 1048510465
+[src/main_hpack_001.rs:225:9] &header = FrameHeader {
+    length: 30,
+    type_: 1,
+    flags: 5,
+    stream_id: 1,
+}
+Received HEADERS frame: length=30, flags=5, stream_id=1
+Decoded headers:
+:method: GET
+:scheme: http
+:authority: localhost:8080
+:path: /
+user-agent: curl/8.6.0
+accept: */*
+[src/main_hpack_001.rs:225:9] &header = FrameHeader {
+    length: 0,
+    type_: 4,
+    flags: 1,
+    stream_id: 0,
+}
+Unexpected frame type: 4
+```
+
+The error `Unexpected frame type: 4` indicates that the server received a `SETTINGS` frame (type `4`) after processing the `HEADERS` frame. This is unexpected because the server already sent a `SETTINGS` acknowledgment frame earlier in the connection setup.
+
+---
+
+### **Why This Happens**
+In HTTP/2, the client may send additional `SETTINGS` frames during the connection to update settings. However, your server is not explicitly handling this case and treats it as an unexpected frame type.
+
+---
+
+### **How to Fix This**
+To handle this correctly, the server should:
+1. **Allow Additional `SETTINGS` Frames**:
+   - The server should process `SETTINGS` frames even after the initial connection setup.
+   - If the `SETTINGS` frame has the `ACK` flag set, it is an acknowledgment from the client and should be ignored.
+   - If the `SETTINGS` frame does not have the `ACK` flag set, the server should update its settings and send a `SETTINGS` acknowledgment.
+
+2. **Update the Frame Handling Logic**:
+   - Add a case for `SETTINGS_FRAME_TYPE` in the frame-handling loop.
+
+---
+
+### **Updated Code**
+Here’s how you can update the `handle_client` function to handle additional `SETTINGS` frames:
+
+```rust
+fn handle_client(mut stream: TcpStream) {
+    // Step 1: Read and validate the HTTP/2 connection preface
+    if !handle_connection_preface(&mut stream) {
+        return; // Close the connection if the preface is invalid
+    }
+
+    // Step 2: Send the server's SETTINGS frame
+    send_http2_settings_frame(&mut stream);
+
+    // Step 3: Read the client's SETTINGS frame
+    if !read_client_settings_frame(&mut stream) {
+        return; // Close the connection if the frame is invalid
+    }
+
+    // Step 4: Handle frames in a loop
+    loop {
+        let mut header_buffer = [0; 9];
+        if let Err(_) = stream.read_exact(&mut header_buffer) {
+            eprintln!("Failed to read frame header");
+            return; // Close the connection on read error
+        }
+
+        let header = FrameHeader::from_bytes(&header_buffer);
+
+        match header.type_ {
+            WINDOW_UPDATE_FRAME_TYPE => {
+                if !read_window_update_frame(&mut stream, header) {
+                    return; // Close the connection if the frame is invalid
+                }
+            }
+            HEADERS_FRAME_TYPE => {
+                if !read_headers_frame(&mut stream, header) {
+                    return; // Close the connection if the frame is invalid
+                }
+
+                // Send a response
+                send_response(&mut stream);
+            }
+            SETTINGS_FRAME_TYPE => {
+                // Handle additional SETTINGS frames
+                if header.flags & 0x01 == 0x01 {
+                    // This is a SETTINGS acknowledgment (ignore it)
+                    println!("Received SETTINGS acknowledgment");
+                } else {
+                    // This is a new SETTINGS frame
+                    println!("Received additional SETTINGS frame");
+                    if !read_client_settings_frame(&mut stream) {
+                        return; // Close the connection if the frame is invalid
+                    }
+
+                    // Send a SETTINGS acknowledgment
+                    let ack_frame = [
+                        0x00, 0x00, 0x00, // Length: 0 (empty payload)
+                        0x04,             // Type: SETTINGS (4)
+                        0x01,             // Flags: ACK (0x01)
+                        0x00, 0x00, 0x00, 0x00, // Stream ID: 0 (connection-level)
+                    ];
+
+                    if let Err(_) = stream.write_all(&ack_frame) {
+                        eprintln!("Failed to send SETTINGS acknowledgment");
+                        return;
+                    }
+                }
+            }
+            _ => {
+                eprintln!("Unexpected frame type: {}", header.type_);
+                return; // Close the connection on unexpected frame types
+            }
+        }
+    }
+}
+```
+
+---
+
+### **Key Changes**
+1. **Handling Additional `SETTINGS` Frames**:
+   - The server now checks if the `SETTINGS` frame has the `ACK` flag set.
+   - If the `ACK` flag is set, the frame is ignored (it is an acknowledgment from the client).
+   - If the `ACK` flag is not set, the server processes the new settings and sends an acknowledgment.
+
+2. **Graceful Handling of Frames**:
+   - The server continues to handle `WINDOW_UPDATE`, `HEADERS`, and `SETTINGS` frames in the loop.
+
+---
+
+### **Testing with `curl`**
+Run the server and test it with:
+```bash
+curl -v --http2-prior-knowledge http://localhost:8080
+```
+
+If everything is implemented correctly:
+1. The server will handle the initial `SETTINGS` frame and send an acknowledgment.
+2. The server will handle the `HEADERS` frame, decode the headers, and send a response.
+3. If the client sends additional `SETTINGS` frames, the server will process them and send acknowledgments.
+
+---
+
+### **Example Output**
+#### Server Logs:
+```
+Valid HTTP/2 connection preface received
+Received SETTINGS frame: length=18, flags=0, stream_id=0
+Setting: key=3, value=100
+Setting: key=4, value=10485760
+Setting: key=2, value=0
+Received WINDOW_UPDATE frame: length=4, flags=0, stream_id=0
+Window size increment: 1048510465
+Received HEADERS frame: length=30, flags=5, stream_id=1
+Decoded headers:
+:method: GET
+:scheme: http
+:authority: localhost:8080
+:path: /
+user-agent: curl/8.6.0
+accept: */*
+Received additional SETTINGS frame
+Received SETTINGS acknowledgment
+```
+
+#### `curl` Output:
+```
+* Connected to localhost (127.0.0.1) port 8080 (#0)
+* Using HTTP2, server supports multi-use
+* Connection state changed (HTTP/2 confirmed)
+* Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+* Using Stream ID: 1 (easy handle 0x5588b0f6e0b0)
+> GET / HTTP/2
+> Host: localhost:8080
+> User-Agent: curl/8.6.0
+> Accept: */*
+>
+* Connection state changed (MAX_CONCURRENT_STREAMS == 100)!
+< HTTP/2 200
+< content-length: 12
+<
+Hello, world!
+* Connection #0 to host localhost left intact
+```
+
+---
+
+### **Next Steps**
+1. **Test with Multiple Requests**:
+   - Verify that the server handles multiple requests on the same connection.
+
+2. **Handle Other Frame Types**:
+   - Add support for other frame types (e.g., `PING`, `GOAWAY`) to make the server more robust.
+
+3. **Improve Error Handling**:
+   - Add more robust error handling to gracefully handle malformed frames or unexpected errors.
+
+Let me know if you need further assistance!
+
+
